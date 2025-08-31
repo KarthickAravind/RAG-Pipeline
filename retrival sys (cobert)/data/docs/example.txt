@@ -1,0 +1,1 @@
+Instruction: Example local document for testing the retriever without DB.

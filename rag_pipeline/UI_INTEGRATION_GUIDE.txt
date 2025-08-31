@@ -1,0 +1,286 @@
+===============================================================================
+                    RAG PIPELINE UI INTEGRATION GUIDE FOR PERSON 4
+===============================================================================
+
+OVERVIEW:
+This document provides all the essential functions and endpoints from the 
+rag_pipeline folder that Person 4 needs to build the UI testing interface.
+
+===============================================================================
+                              CORE API ENDPOINTS
+===============================================================================
+
+BASE URL: http://localhost:8001
+
+1. HEALTH CHECK
+   Endpoint: GET /health
+   Purpose: Check if server is running
+   Response: {"status": "ok"}
+
+2. SEARCH ENDPOINT
+   Endpoint: POST /search
+   Purpose: Retrieve relevant SAP iFlow chunks using vector similarity + reranking
+   
+   Request Body:
+   {
+     "query": "string (required)",
+     "top_k": "integer (optional, default: 15)"
+   }
+   
+   Response:
+   {
+     "query": "string",
+     "results": [
+       {
+         "id": "string",
+         "content": "string", 
+         "similarity_score": "float",
+         "cross_encoder_score": "float",
+         "final_score": "float",
+         "metadata": {"chunk_id": "string"}
+       }
+     ],
+     "total_candidates": "integer",
+     "reranking_applied": "boolean"
+   }
+
+3. GENERATE ENDPOINT
+   Endpoint: POST /generate
+   Purpose: Generate SAP iFlow artifacts using retrieved context
+   
+   Request Body (Option 1 - Using IDs):
+   {
+     "query": "string (required)",
+     "selected_ids": ["string array"],
+     "model_key": "string (optional: 'mistral' or 'zephyr')"
+   }
+   
+   Request Body (Option 2 - Direct Content):
+   {
+     "query": "string (required)", 
+     "selected_contents": ["string array"],
+     "model_key": "string (optional: 'mistral' or 'zephyr')"
+   }
+   
+   Response:
+   {
+     "query": "string",
+     "model_used": "string",
+     "validation_status": "string (valid/invalid/unchecked)",
+     "artifacts": {
+       "groovy": "string",
+       "xml": "string", 
+       "properties": "string",
+       "xslt": "string"
+     },
+     "context_used": ["string array"]
+   }
+
+4. FEEDBACK ENDPOINT
+   Endpoint: POST /feedback
+   Purpose: Record user feedback to improve retrieval quality
+   
+   Query Parameters:
+   - query: string (required)
+   - document_id: string (required)
+   - sentiment: string (required: 'positive' or 'negative')
+   - score: float (optional, default: 1.0)
+   
+   Response: {"ok": true}
+
+===============================================================================
+                          KEY BACKEND FUNCTIONS TO DISPLAY
+===============================================================================
+
+1. SEARCH FUNCTIONALITY
+   Function: search_query(query: str, top_k: int = None)
+   Location: app/retriever_service.py
+   Purpose: Main search function that handles vector similarity + reranking
+   
+   UI Display Ideas:
+   - Search input box with top_k slider (1-20)
+   - Results table showing: ID, Content Preview, Similarity Score, Final Score
+   - Reranking status indicator
+   - Total candidates found counter
+
+2. GENERATION FUNCTIONALITY  
+   Function: generate_from_selected(query, selected_items, model_key)
+   Location: app/generator_service.py
+   Purpose: Generate SAP iFlow code from selected chunks
+   
+   UI Display Ideas:
+   - Query input box
+   - Chunk selection checkboxes from search results
+   - Model selector dropdown (Mistral/Zephyr)
+   - Generated code display with syntax highlighting
+   - Validation status badge
+
+3. MODEL ROUTING
+   Function: choose_model_for_query(qtype: str, override_key: str = None)
+   Location: app/llm_router.py
+   Purpose: Auto-select best model based on query type
+   
+   UI Display Ideas:
+   - Query type detection display (groovy/xml/properties/xslt)
+   - Recommended model indicator
+   - Manual model override option
+
+4. ARTIFACT VALIDATION
+   Functions: validate_xml(), validate_properties()
+   Location: app/validation.py
+   Purpose: Validate generated code syntax
+   
+   UI Display Ideas:
+   - Validation status icons (✓/✗)
+   - Error messages for invalid syntax
+   - Code quality indicators
+
+===============================================================================
+                            CONFIGURATION VALUES
+===============================================================================
+
+Environment Variables (for UI configuration):
+- GEN_TOP_K: 15 (default number of search results)
+- MAX_CONTEXT_CHARS: 12000 (maximum context length)
+- EMBEDDING_MODEL: microsoft/codebert-base
+- TABLE_NAME: documents (568 total documents in database)
+
+Supported Models:
+- mistral: mistralai/Mistral-7B-Instruct-v0.3 (best for groovy)
+- zephyr: HuggingFaceH4/zephyr-7b-beta (best for xml/properties)
+
+Supported Artifact Types:
+- groovy: Groovy scripts for data processing
+- xml: SAP iFlow XML configurations
+- properties: Configuration properties files  
+- xslt: XSLT transformation mappings
+
+===============================================================================
+                              UI FEATURES TO BUILD
+===============================================================================
+
+1. SEARCH INTERFACE
+   Components Needed:
+   - Search input field
+   - Top-K results slider (1-20)
+   - Search button
+   - Results table with columns:
+     * Checkbox for selection
+     * Document ID
+     * Content preview (first 100 chars)
+     * Similarity score bar
+     * Cross-encoder score
+     * Final score
+   - Total results counter
+   - Reranking status indicator
+
+2. GENERATION INTERFACE  
+   Components Needed:
+   - Generation query input
+   - Selected chunks display
+   - Model selector (Mistral/Zephyr/Auto)
+   - Generate button
+   - Generated code display with tabs for each artifact type
+   - Validation status badges
+   - Copy to clipboard buttons
+
+3. FEEDBACK INTERFACE
+   Components Needed:
+   - Thumbs up/down buttons for each search result
+   - Feedback submission confirmation
+   - Feedback history display
+
+4. DASHBOARD/MONITORING
+   Components Needed:
+   - System health indicator
+   - Database status (568 documents)
+   - Recent queries history
+   - Performance metrics (response times)
+   - Model usage statistics
+
+===============================================================================
+                            SAMPLE API CALLS FOR TESTING
+===============================================================================
+
+1. Test Search:
+curl -X POST "http://localhost:8001/search" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "invoice logging", "top_k": 10}'
+
+2. Test Generation:
+curl -X POST "http://localhost:8001/generate" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "create groovy script",
+    "selected_ids": ["b6bd019b-3140-4267-9ca0-bf800c72c35c"],
+    "model_key": "mistral"
+  }'
+
+3. Test Feedback:
+curl -X POST "http://localhost:8001/feedback?query=test&document_id=123&sentiment=positive"
+
+===============================================================================
+                              ERROR HANDLING
+===============================================================================
+
+Common Errors to Handle in UI:
+1. 422 Unprocessable Content - Invalid JSON or missing required fields
+2. 400 Bad Request - Missing selected_ids or selected_contents
+3. 500 Internal Server Error - Server/model issues
+4. Connection errors - Server not running
+
+Display user-friendly error messages and retry options.
+
+===============================================================================
+                            RECOMMENDED UI FRAMEWORK
+===============================================================================
+
+Suggested Tech Stack:
+- Frontend: React/Vue.js or Streamlit (for rapid prototyping)
+- HTTP Client: Axios/Fetch API
+- UI Components: Material-UI, Ant Design, or Streamlit components
+- Code Highlighting: Prism.js or Monaco Editor
+- Charts: Chart.js for performance metrics
+
+===============================================================================
+                              TESTING WORKFLOW
+===============================================================================
+
+Recommended UI Testing Flow:
+1. Health check → Show server status
+2. Search query → Display results with scores
+3. Select chunks → Show selection count
+4. Generate code → Display artifacts with validation
+5. Provide feedback → Confirm submission
+6. View history → Show previous queries/results
+
+===============================================================================
+                                PERFORMANCE NOTES
+===============================================================================
+
+Expected Response Times:
+- /health: <100ms
+- /search: 2-5 seconds (depends on reranking)
+- /generate: 10-30 seconds (depends on model and context)
+- /feedback: <500ms
+
+Database Info:
+- 568 SAP iFlow documents indexed
+- CodeBERT embeddings (768 dimensions)
+- Supabase PostgreSQL with pgvector
+
+===============================================================================
+                                  CONCLUSION
+===============================================================================
+
+This guide provides all the essential information Person 4 needs to build a 
+comprehensive UI for testing the RAG pipeline. The UI should focus on:
+
+1. Easy query input and result visualization
+2. Intuitive chunk selection for generation
+3. Clear display of generated artifacts
+4. Simple feedback collection
+5. System monitoring and performance metrics
+
+The API is fully functional and ready for UI integration. All endpoints are
+documented with request/response formats and error handling guidelines.

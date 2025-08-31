@@ -1,0 +1,106 @@
+===============================================================================
+                    UNNECESSARY FILES IN RAG_PIPELINE FOLDER
+===============================================================================
+
+FILES SAFE TO DELETE:
+======================
+
+1. TEST FILES (Development/Debug Only):
+   - test_api.py          (5940 bytes) - API testing script
+   - test_env.py          (1153 bytes) - Environment testing
+   - test_pipeline.py     (3114 bytes) - Pipeline testing
+   - test_simple.py       (3017 bytes) - Simple functionality test
+
+2. DUPLICATE DOCUMENTATION:
+   - README.md            (583 bytes)  - Basic readme (keep README_USAGE.md instead)
+
+3. SHELL SCRIPT (Windows Environment):
+   - run.sh               (147 bytes)  - Bash script (use start_server.py instead)
+
+4. CACHE/COMPILED FILES:
+   - app/__pycache__/     (22 items)   - Python bytecode cache
+   - app/p2/__pycache__/  (3 items)    - Python bytecode cache
+
+5. STUB/PLACEHOLDER FILES IN P2:
+   - app/p2/retrieval/    (4 items)    - Contains stub implementations
+   - app/p2/rerank/       (6 items)    - Contains stub implementations
+
+TOTAL SPACE TO SAVE: ~15-20 MB (mostly from __pycache__ folders)
+
+===============================================================================
+
+FILES TO KEEP (ESSENTIAL):
+==========================
+
+CORE APPLICATION:
+- .env                     - Environment configuration
+- requirements.txt         - Dependencies
+- start_server.py          - Server startup script
+- README_USAGE.md          - Complete usage guide
+- UI_INTEGRATION_GUIDE.txt - UI development guide
+
+APP FOLDER (CORE):
+- app/main.py              - FastAPI application
+- app/routes.py            - API endpoints
+- app/models.py            - Pydantic models
+- app/config.py            - Configuration
+- app/generator_service.py - LLM generation
+- app/retriever_service.py - Search functionality
+- app/llm_router.py        - Model routing
+- app/prompts.py           - LLM prompts
+- app/utils.py             - Utility functions
+- app/validation.py        - Code validation
+- app/__init__.py          - Package init
+
+P2 INTEGRATION (KEEP):
+- app/p2/config.py         - Configuration bridge
+- app/p2/vendors/          - Supabase client bridge
+- app/p2/application/app.py - RetrievalSystem wrapper
+
+===============================================================================
+
+CLEANUP COMMANDS:
+================
+
+Windows PowerShell:
+Remove-Item "app\__pycache__" -Recurse -Force
+Remove-Item "app\p2\__pycache__" -Recurse -Force
+Remove-Item "test_*.py"
+Remove-Item "run.sh"
+Remove-Item "README.md"
+
+Linux/Mac:
+rm -rf app/__pycache__/
+rm -rf app/p2/__pycache__/
+rm test_*.py
+rm run.sh
+rm README.md
+
+===============================================================================
+
+OPTIONAL CLEANUP (Advanced):
+============================
+
+IF USING REAL RETRIEVAL SYSTEM:
+- app/p2/retrieval/search.py - Stub implementation (replace with real)
+- app/p2/rerank/rerank.py    - Stub implementation (replace with real)
+- app/p2/rerank/feedback.py  - Stub implementation (replace with real)
+
+These contain placeholder/mock implementations that are bridged to the real
+retrieval system in "retrival sys (cobert)" folder.
+
+===============================================================================
+
+RECOMMENDATION:
+==============
+
+IMMEDIATE CLEANUP (Safe):
+1. Delete all test_*.py files
+2. Delete __pycache__ folders
+3. Delete run.sh (use start_server.py)
+4. Delete README.md (keep README_USAGE.md)
+
+This will clean up ~15-20 MB and remove development clutter while keeping
+all production-essential files intact.
+
+The core application will continue to work perfectly after cleanup.

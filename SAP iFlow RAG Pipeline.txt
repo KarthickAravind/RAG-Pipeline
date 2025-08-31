@@ -1,0 +1,178 @@
+# SAP iFlow RAG Pipeline Rebuild with Re-ranking
+
+## Project Overview
+
+You are tasked with rebuilding our SAP iFlow RAG (Retrieval-Augmented Generation) pipeline. 
+The current system processes SAP integration packages and enables AI-powered iFlow code generation. 
+Your goal is to improve retrieval accuracy using re-ranking techniques.
+
+## Current System Architecture
+
+### Existing Components (I will handle):
+- Chunking Pipeline: Complete and working
+  - Processes 100+ SAP integration packages (ZIP files)
+  - Extracts iFlow XML, Groovy scripts, XSLT mappings, properties
+  - Generates 6,321+ high-quality chunks with metadata
+  - Located in: chunked_packages_output/
+
+### Database Infrastructure:
+- Supabase PostgreSQL with vector extensions
+- I will provide you the connection details and access
+
+## Team Structure and Task Distribution
+
+You are a team of 5 people. Split the tasks as follows to avoid duplication:
+
+**Person 1: Vector Storage and Embedding Research**
+- Research and compare embedding models:
+  - sentence-transformers/all-MiniLM-L6-v2 (semantic)
+  - microsoft/codebert-base (code-specific)
+  - text-embedding-ada-002 (OpenAI)
+  - Other code-specific embeddings
+- Create vector loading system for Supabase
+- Load chunked data from training_dataset.json (6,321 chunks)
+- Document which embedding model performs best for SAP iFlow code
+
+**Person 2: Retrieval System and Re-ranking**
+- Build initial vector search system
+- Implement re-ranking techniques:
+  - Cross-encoder models (cross-encoder/ms-marco-MiniLM-L-6-v2)
+  - Metadata-based re-ranking (complexity scores, reusability scores)
+  - Query classification for different iFlow component types
+- Create hybrid scoring system combining multiple signals
+
+**Person 3: RAG Generation Pipeline**
+- Integrate multiple LLMs:
+  - Claude Sonnet-4
+  - OpenAI GPT models
+  - Local models if needed
+- Create prompt templates for different query types
+- Build context management system
+- Implement output validation for generated iFlow code
+
+**Person 4: UI Development and Testing Interface**
+- Build web interface to test similarity search
+- Create query interface for testing retrieval accuracy
+- Build visualization for search results and re-ranking scores
+- Implement real-time testing dashboard
+- Allow users to input queries and see retrieved chunks with scores
+
+**Person 5: Evaluation Framework and Tool Integration**
+- Research and test langflow and flowise for our use case
+- Determine if these tools can be integrated into our pipeline
+- Build evaluation metrics:
+  - Precision@K, Recall@K for retrieval
+  - Semantic similarity for generation quality
+  - Response time benchmarks
+- Create automated testing framework
+
+## Technical Requirements
+
+### Required Technologies:
+- Vector Database: Supabase PostgreSQL with pgvector (I will provide access)
+- Embeddings: Research and select best performing model
+- Re-ranking: Cross-encoders, custom scoring models
+- LLMs: Claude Sonnet-4, OpenAI models
+- Framework: LangChain (mandatory)
+- API: FastAPI for backend
+- UI: Streamlit or React for testing interface
+
+### Tool Evaluation:
+- Test langflow for visual pipeline building
+- Test flowise for no-code RAG pipeline creation
+- Evaluate if these tools can handle our SAP-specific requirements
+- Document pros/cons and integration possibilities
+
+## Success Metrics
+
+### Quantitative Goals:
+- Retrieval Accuracy: >80% Precision@5 for relevant iFlow components
+- Response Time: <3 seconds for query processing
+- Generation Quality: Syntactically correct iFlow XML
+- System Performance: Handle multiple concurrent users
+
+### Qualitative Goals:
+- Generate usable SAP iFlow code
+- Maintain logical component relationships
+- Enable rapid prototyping of integration flows
+
+## Project Timeline (3 Weeks)
+
+**Week 1:**
+- Person 1: Embedding model research and vector loading
+- Person 2: Basic retrieval system setup
+- Person 3: LLM integration and basic generation
+- Person 4: UI framework setup and basic interface
+- Person 5: Tool evaluation (langflow/flowise) and evaluation framework design
+
+**Week 2:**
+- Person 1: Optimize embedding and loading performance
+- Person 2: Implement re-ranking algorithms
+- Person 3: Prompt engineering and output validation
+- Person 4: Testing interface with search visualization
+- Person 5: Metrics implementation and automated testing
+
+**Week 3:**
+- All: Integration testing and optimization
+- Person 4: UI polish and user experience improvements
+- Person 5: Performance benchmarking and documentation
+- Team: Final testing and deployment preparation
+
+## Development Guidelines
+
+### GitHub Usage:
+- Create shared repository for the project
+- Each person works on separate branches for their components
+- Daily commits with clear commit messages
+- Weekly code reviews and integration
+- Use pull requests for merging changes
+- Document your code and APIs
+
+### Collaboration Rules:
+- Daily standup meetings to avoid duplication
+- Clear API contracts between components
+- Shared configuration and environment setup
+- Common coding standards and documentation format
+
+## Deliverables
+
+**Week 1 Deliverables:**
+- Embedding model comparison report
+- Basic retrieval system working
+- LLM integration proof of concept
+- UI mockup and basic interface
+- Tool evaluation report (langflow/flowise)
+
+**Week 2 Deliverables:**
+- Optimized vector storage system
+- Re-ranking implementation
+- Working generation pipeline
+- Functional testing interface
+- Evaluation metrics implementation
+
+**Week 3 Deliverables:**
+- Complete integrated system
+- Performance benchmarks
+- User testing results
+- Documentation and deployment guide
+- Recommendations for production deployment
+
+## Key Focus Areas
+
+1. **Embedding Model Selection**: Determine which embedding model works best for SAP iFlow code retrieval
+2. **Re-ranking Effectiveness**: Measure improvement over basic vector search
+3. **Tool Integration**: Evaluate if langflow/flowise can simplify our pipeline
+4. **User Experience**: Create intuitive interface for testing and validation
+5. **Performance**: Ensure system can handle real-world usage
+
+## Success Criteria
+
+Your rebuilt RAG pipeline should:
+1. Improve retrieval accuracy over basic vector search
+2. Generate usable SAP iFlow code from natural language
+3. Provide clear testing interface for validation
+4. Scale to handle multiple users
+5. Include proper evaluation and monitoring
+
+The goal is to create a system that can take natural language requirements and generate complete, 
+usable SAP integration flows while providing clear visibility into the retrieval and generation process.

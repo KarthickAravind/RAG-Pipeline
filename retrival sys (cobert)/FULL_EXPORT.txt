@@ -1,0 +1,1050 @@
+============================
+Directory Tree: Program/retrival sys (cobert)
+============================
+
+- data/
+  - cache/
+  - docs/
+    - example.txt
+- demo.py
+- pyproject.toml
+- README.md
+- retrieval_rerank_codebert.egg-info/
+  - dependency_links.txt
+  - PKG-INFO
+  - requires.txt
+  - SOURCES.txt
+  - top_level.txt
+- src/
+  - __init__.py
+  - application/
+    - __init__.py
+    - app.py
+  - cli.py
+  - config.py
+  - rerank/
+    - __init__.py
+    - feedback.py
+    - rerank.py
+  - retrieval/
+    - __init__.py
+    - embedder.py
+    - search.py
+  - utils/
+    - __init__.py
+    - chunk.py
+    - text.py
+  - vendors/
+    - __init__.py
+    - supabase_client.py
+
+
+============================
+How It Works (Overview)
+============================
+
+- Embeddings: Uses microsoft/codebert-base to embed queries (client-side) via mean pooling over token embeddings.
+- Storage: Documents (content + precomputed vector) are stored in Supabase Postgres (table 'documents').
+- Retrieval: Fetches all document vectors from Supabase and computes cosine similarity locally (no SQL/RPC for vector math).
+- Re-ranking: Applies a cross-encoder (cross-encoder/ms-marco-MiniLM-L-6-v2) to re-score top candidates, blended with cosine.
+- Feedback: User feedback is stored in-memory (by id and content fingerprint) and mildly boosts/penalizes results on re-rank.
+- Demos: A CLI (src/cli.py) and interactive demo (demo.py) showcase searching, re-ranking, and feedback application.
+
+
+============================
+FILE: README.md
+============================
+```text
+### Retrieval + Reranking (Supabase client-side cosine)
+
+- **Embeddings**: `microsoft/codebert-base` mean-pooled for queries
+- **Store**: Supabase Postgres table `documents` containing precomputed embeddings in a column
+- **Search**: fetch embeddings from Supabase, compute cosine similarity client-side (no SQL/RPC)
+- **Rerank**: Cross-Encoder + feedback-aware
+
+### Setup
+
+1) Install
+```
+pip install -e .
+```
+
+2) Environment `.env`
+```
+SUPABASE_URL=your_supabase_url
+SUPABASE_KEY=your_supabase_key
+HF_TOKEN=your_hf_token
+TABLE_NAME=documents
+VECTOR_COLUMN=embedding
+CONTENT_COLUMN=content
+ID_COLUMN=id
+EMBEDDING_MODEL=microsoft/codebert-base
+MAX_LENGTH=256
+```
+
+3) Data in Supabase
+- Ensure table `documents` has columns: `id`, `content`, and `embedding` (array of floats).
+- Precompute and store embeddings for your documents in `embedding`.
+
+### Usage
+
+CLI:
+```
+python -m src.cli "your query here" --user user123 --topk 5
+```
+- It prints top results with Final Score, Similarity, Cross-Encoder, and Chunk ID (row id).
+- Then it prompts for helpfulness: y/n/skip.
+- It re-ranks and prints again.
+
+### Notes
+- No SQL functions or RPC are required. The app only reads rows and calculates cosine similarity locally.
+```
+
+
+============================
+FILE: pyproject.toml
+============================
+```toml
+[build-system]
+requires = ["setuptools>=62", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "retrieval-rerank-codebert"
+version = "0.1.0"
+description = "Retrieval and reranking system using CodeBERT and Supabase pgvector"
+authors = [{ name = "you" }]
+requires-python = ">=3.9"
+dependencies = [
+	"torch>=2.1",
+	"transformers>=4.41",
+	"tokenizers>=0.15",
+	"sentencepiece>=0.1.99",
+	"tqdm>=4.66",
+	"numpy>=1.26",
+	"pandas>=2.2",
+	"python-dotenv>=1.0",
+	"supabase>=2.5",
+	"pgvector>=0.2.5",
+	"psycopg2-binary>=2.9",
+	"sentence-transformers>=2.7",
+]
+
+[tool.setuptools]
+packages = ["src"]
+```
+
+
+============================
+FILE: demo.py
+============================
+```python
+#!/usr/bin/env python3
+"""
+Interactive iFlow Retrieval System Demo
+Ask queries and see search results with re-ranking!
+"""
+
+import sys
+import os
+from pathlib import Path
+
+project_root = Path(__file__).parent / "src"
+sys.path.insert(0, str(project_root))
+
+from application.app import RetrievalSystem  # type: ignore
+
+
+def print_header():
+    print("=" * 60)
+    print("\U0001F680 iFlow Retrieval System - Interactive Demo")
+    print("=" * 60)
+    print("Ask questions about iFlow components and see smart search results!")
+    print("Type 'quit' to exit, 'help' for commands, 'status' for system info")
+    print("=" * 60)
+
+
+def print_help():
+    print("\n\U0001F4DA Available Commands:")
+    print("  help     - Show this help message")
+    print("  status   - Show system status")
+    print("  tables   - Show available database tables")
+    print("  load     - Load sample data")
+    print("  quit     - Exit the demo")
+    print("  [query]  - Ask a question about iFlow components")
+
+
+def print_search_results(results, query):
+    print(f"\n\U0001F50D Search Results for: '{query}'")
+    print("-" * 50)
+    if 'error' in results:
+        print(f"\u274C Error: {results['error']}")
+        return
+    if not results.get('results'):
+        print("\U0001F4ED No results found. Try a different query.")
+        return
+    total_candidates = results.get('total_candidates', 0)
+    total_results = len(results['results'])
+    if results.get('reranking_applied'):
+        print(f"\U0001F4CA Initial Similarity Search: {total_candidates} candidates")
+        print(f"\U0001F4CA After Re-ranking: {total_results} final results (showing top 5):\n")
+        for i, doc in enumerate(results['results'][:5], 1):
+            print(f" Rank {i} (Re-ranked):")
+            content = doc.get('content', 'No content')
+            snippet = content[:150] + "..." if len(content) > 150 else content
+            print(f"   \U0001F4C4 Content: {snippet}")
+            fs = doc.get('final_score', 'N/A')
+            sim = doc.get('similarity_score', 'N/A')
+            ce = doc.get('cross_encoder_score', 'N/A')
+            print(f"   \U0001F3AF Final Score: {fs if isinstance(fs, str) else f'{fs:.3f}'}")
+            print(f"   \U0001F50D Similarity: {sim if isinstance(sim, str) else f'{sim:.3f}'}")
+            if ce != 'N/A':
+                print(f"   \U0001F9E0 Cross-Encoder: {ce if isinstance(ce, str) else f'{ce:.3f}'}")
+            meta = doc.get('metadata', {})
+            if 'chunk_id' in meta:
+                print(f"   \U0001F522 Chunk ID: {meta['chunk_id']}")
+            print("")
+    else:
+        print(f"\U0001F4CA Found {total_results} results (no re-ranking applied):\n")
+        for i, doc in enumerate(results['results'][:5], 1):
+            print(f" Rank {i} (Similarity):")
+            content = doc.get('content', 'No content')
+            snippet = content[:150] + "..." if len(content) > 150 else content
+            print(f"   \U0001F4C4 Content: {snippet}")
+            sim = doc.get('similarity_score', 'N/A')
+            print(f"   \U0001F50D Similarity: {sim if isinstance(sim, str) else f'{sim:.3f}'}")
+            print("")
+
+
+def print_system_status(system):
+    print("\n System Status:")
+    print("-" * 30)
+    info = system.get_table_info()
+    if 'row_count' in info:
+        print(f" Documents in Table: {info['row_count']}")
+    if 'error' in info:
+        print(f" Table Status: \u274C {info['error']}")
+    else:
+        print(f" Table Status: \u2705 Accessible")
+    print(f" Re-ranker: Available")
+
+
+def load_sample_data(system):
+    print("\n Loading sample data...")
+    result = system.load_sample_data()
+    if result.get('success'):
+        print(f"Successfully loaded {result.get('documents_added', 0)} sample documents!")
+    else:
+        print(f" Failed to load sample data: {result.get('error', 'Unknown error')}")
+
+
+def interactive_demo():
+    print_header()
+    print(" Initializing retrieval system...")
+    system = RetrievalSystem()
+    print("System initialized successfully!")
+    print("\n Loading sample data...")
+    load_sample_data(system)
+    print("\n Ready! Ask your questions about iFlow components.")
+    while True:
+        try:
+            user_input = input("\n Your query (or command): ").strip()
+            if not user_input:
+                continue
+            if user_input.lower() == 'quit':
+                print("Goodbye! Thanks for trying the iFlow Retrieval System!")
+                break
+            if user_input.lower() == 'help':
+                print_help()
+                continue
+            if user_input.lower() == 'status':
+                print_system_status(system)
+                continue
+            if user_input.lower() == 'load':
+                load_sample_data(system)
+                continue
+            print(f"\n Searching for: '{user_input}'")
+            print("\U0001F4DA Against database documents")
+            print(" Please wait...")
+            results = system.search(user_input, top_k=5, apply_reranking=True)
+            print_search_results(results, user_input)
+            if results.get('results'):
+                print(" Enter feedback per-rank (e.g., '1 y, 2 n, 3 skip'). Press Enter to skip:")
+                fb_line = input(" Feedback: ").strip()
+                if fb_line:
+                    # Parse entries like "1 y" separated by commas
+                    entries = [e.strip() for e in fb_line.split(',') if e.strip()]
+                    for entry in entries:
+                        parts = entry.split()
+                        if len(parts) < 2:
+                            continue
+                        try:
+                            rank = int(parts[0])
+                        except ValueError:
+                            continue
+                        label = parts[1].lower()
+                        if not (1 <= rank <= len(results['results'])):
+                            continue
+                        doc = results['results'][rank - 1]
+                        if label in ['y', 'yes', '+1', 'pos', 'positive']:
+                            system.record_feedback(user_input, doc.get('id', 'unknown'), 'positive', 1.0)
+                        elif label in ['n', 'no', '-1', 'neg', 'negative']:
+                            system.record_feedback(user_input, doc.get('id', 'unknown'), 'negative', -1.0)
+                        # else skip
+                    # Re-rank and show again
+                    print("\n Re-ranking with feedback... Please wait...\n")
+                    results2 = system.search(user_input, top_k=5, apply_reranking=True)
+                    print_search_results(results2, user_input)
+        except KeyboardInterrupt:
+            print("\n\nGoodbye! Thanks for trying the iFlow Retrieval System!")
+            break
+        except Exception as e:
+            print(f" Error: {e}")
+            print(" Try a different query or type 'help' for commands.")
+
+
+if __name__ == "__main__":
+    interactive_demo()
+```
+
+
+============================
+FILE: src/cli.py
+============================
+```python
+import argparse
+from typing import Optional
+from retrieval.search import Retriever
+from rerank.feedback import FeedbackStore
+from rerank.rerank import rerank_with_feedback, CrossEncoderScorer
+from config import settings
+import os
+import glob
+
+
+def print_banner():
+    docs = [p for p in glob.glob(os.path.join(settings.docs_path, "**", "*.*"), recursive=True) if os.path.isfile(p)]
+    print(f"\U0001F4DA Found {len(docs)} sample documents")
+    print(f" \u2705 Sample data is loaded from local files under '{settings.docs_path}'\n")
+    print(" Ready! Ask your questions about your documents.\n")
+
+
+def print_stage_search(query: str):
+    print(f" Searching for: '{query}'")
+    print("\U0001F4DA Against local documents")
+    print(" Please wait...")
+
+
+def print_results_verbose(query: str, results, title: str = "Search Results") -> None:
+    print(f"\n\U0001F50D {title} for: '{query}'")
+    print("-" * 50)
+    print("\U0001F3F7\uFE0F  Query Type: N/A")
+    print(f"\U0001F4CA Initial Similarity Search: {len(results)} candidates")
+    print(f"\U0001F4CA After Re-ranking: {min(5, len(results))} final results (showing top {min(5, len(results))}):\n")
+    for i, r in enumerate(results[:5], 1):
+        content = r.result.content.replace("\n", " ")
+        content = (content[:180] + "...") if len(content) > 183 else content
+        ce_score = r.cross_encoder_score
+        print(f" Rank {i} (Re-ranked):")
+        print(f"   \U0001F4C4 Content: {content}")
+        print(f"   \U0001F3AF Final Score: {r.rerank_score:.3f}")
+        print(f"   \U0001F50D Similarity: {r.result.similarity:.3f}")
+        if ce_score is not None:
+            print(f"   \U0001F9E0 Cross-Encoder: {ce_score:.3f}")
+        print(f"   \U0001F194 Output Type: N/A")
+        print(f"   \U0001F3F7\uFE0F  Data Type: N/A")
+        print(f"   \U0001F522 Chunk ID: {r.result.id}")
+        print("")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Retrieve and rerank using CodeBERT (local store)")
+    parser.add_argument("query", type=str, help="User query text")
+    parser.add_argument("--user", dest="user_id", type=str, default="user1", help="User id for feedback-aware rerank")
+    parser.add_argument("--topk", dest="top_k", type=int, default=5, help="Top K matches")
+    args = parser.parse_args()
+
+    print_banner()
+
+    retriever = Retriever(top_k=args.top_k)
+    feedback = FeedbackStore()
+    cross_encoder = CrossEncoderScorer()
+
+    print_stage_search(args.query)
+    initial = retriever.search(args.query)
+    reranked = rerank_with_feedback(initial, args.user_id, feedback, query_text=args.query, cross_encoder=cross_encoder)
+
+    print_results_verbose(args.query, reranked, title="Search Results")
+
+    # Simple helpfulness feedback like the sample: y/n/skip
+    try:
+        raw = input(" Was this helpful? (y/n/skip): ")
+    except EOFError:
+        raw = "skip"
+    choice = (raw or "skip").strip().lower()
+
+    if choice in ("y", "yes") and reranked:
+        # reward top-1
+        feedback.set_feedback(args.user_id, str(reranked[0].result.id), 1.0)
+    elif choice in ("n", "no") and reranked:
+        # penalize top-1
+        feedback.set_feedback(args.user_id, str(reranked[0].result.id), -1.0)
+
+    if choice in ("y", "yes", "n", "no"):
+        print("\nRe-ranking with feedback...\n")
+        reranked2 = rerank_with_feedback(initial, args.user_id, feedback, query_text=args.query, cross_encoder=cross_encoder)
+        print_results_verbose(args.query, reranked2, title="Re-ranked Results")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+
+============================
+FILE: src/config.py
+============================
+```python
+import os
+from dataclasses import dataclass
+from dotenv import load_dotenv
+
+load_dotenv()
+
+@dataclass
+class Settings:
+    supabase_url: str = os.getenv("SUPABASE_URL", "")
+    supabase_key: str = os.getenv("SUPABASE_KEY", "")
+    hf_token: str = os.getenv("HF_TOKEN", "")
+    # embeddings
+    model_name: str = os.getenv("EMBEDDING_MODEL", "microsoft/codebert-base")
+    max_length: int = int(os.getenv("MAX_LENGTH", "256"))
+    device: str = os.getenv("DEVICE", "cuda" if os.getenv("CUDA", "1") == "1" else "cpu")
+    # Supabase table config (read-only)
+    table_name: str = os.getenv("TABLE_NAME", "documents")
+    vector_column: str = os.getenv("VECTOR_COLUMN", "embedding")
+    content_column: str = os.getenv("CONTENT_COLUMN", "content")
+    id_column: str = os.getenv("ID_COLUMN", "id")
+    # local docs mode (unused in Supabase mode but kept for flexibility)
+    docs_path: str = os.getenv("DOCS_PATH", "data/docs")
+    embed_cache: str = os.getenv("EMBED_CACHE", "data/cache/embeddings.npy")
+    meta_cache: str = os.getenv("META_CACHE", "data/cache/meta.jsonl")
+
+settings = Settings()
+```
+
+
+============================
+FILE: src/application/app.py
+============================
+```python
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+import re
+
+from retrieval.search import Retriever, SearchResult
+from rerank.feedback import FeedbackStore
+from rerank.rerank import rerank_with_feedback, CrossEncoderScorer
+from vendors.supabase_client import get_client
+from config import settings
+
+
+def _fingerprint(text: str) -> str:
+    t = text.lower()
+    t = re.sub(r"\s+", " ", t).strip()
+    return t[:200]
+
+
+@dataclass
+class RetrievalSystem:
+    top_k: int = 5
+    neg_ids: set[str] = field(default_factory=set)
+    pos_ids: set[str] = field(default_factory=set)
+    neg_fps: set[str] = field(default_factory=set)
+    pos_fps: set[str] = field(default_factory=set)
+
+    def __post_init__(self) -> None:
+        self.retriever = Retriever(top_k=self.top_k)
+        self.feedback = FeedbackStore()
+        self.cross_encoder = CrossEncoderScorer()
+        self.client = get_client()
+        self.table_name = settings.table_name
+
+    @property
+    def vector_search(self):
+        return self
+
+    def get_table_info(self) -> Dict[str, Any]:
+        try:
+            resp = self.client.table(self.table_name).select("*", count="exact").limit(0).execute()
+            info: Dict[str, Any] = {"row_count": getattr(resp, "count", None)}
+            return info
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    def list_available_tables(self) -> List[str]:
+        return [self.table_name]
+
+    def get_system_status(self) -> Dict[str, Any]:
+        return {
+            "feedback_stats": {"entries": len(self.feedback.id_scores) + len(self.feedback.content_scores)},
+            "table": self.table_name,
+        }
+
+    def load_sample_data(self) -> Dict[str, Any]:
+        try:
+            info = self.get_table_info()
+            if "row_count" in info and info["row_count"] is not None:
+                return {"success": True, "documents_added": 0, "message": f"Table has {info['row_count']} rows"}
+            return {"success": False, "error": info.get("error", "Unknown table state")}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def search(self, query: str, document: Optional[str] = None, top_k: Optional[int] = None, apply_reranking: bool = True) -> Dict[str, Any]:
+        k = top_k or self.top_k
+        candidate_k = max(k * 5, 50)
+        temp_retriever = Retriever(top_k=candidate_k)
+        results: List[SearchResult] = temp_retriever.search(query)
+        if not results:
+            return {
+                "results": [],
+                "total_candidates": 0,
+                "reranking_applied": False,
+                "vector_search_available": True,
+            }
+        reranked = rerank_with_feedback(
+            results, user_id="demo-user", feedback=self.feedback, query_text=query, cross_encoder=self.cross_encoder
+        )
+        dedup: Dict[str, Dict[str, Any]] = {}
+        for r in reranked:
+            content_text = r.result.content or ""
+            key = content_text.strip()
+            item = {
+                "id": r.result.id,
+                "content": content_text,
+                "similarity_score": r.result.similarity,
+                "cross_encoder_score": r.cross_encoder_score if r.cross_encoder_score is not None else "N/A",
+                "final_score": r.rerank_score,
+                "metadata": {"chunk_id": r.result.id},
+            }
+            prev = dedup.get(key)
+            if prev is None or (isinstance(item["final_score"], (int, float)) and isinstance(prev["final_score"], (int, float)) and item["final_score"] > prev["final_score"]):
+                dedup[key] = item
+        unique_docs = list(dedup.values())
+        # Apply hard ordering by user feedback sets: positives first, then neutral, negatives last
+        def is_neg(d: Dict[str, Any]) -> bool:
+            cid = str(d.get("id", ""))
+            fp = _fingerprint(d.get("content", ""))
+            return cid in self.neg_ids or fp in self.neg_fps
+
+        def is_pos(d: Dict[str, Any]) -> bool:
+            cid = str(d.get("id", ""))
+            fp = _fingerprint(d.get("content", ""))
+            return cid in self.pos_ids or fp in self.pos_fps
+
+        positives = [d for d in unique_docs if is_pos(d)]
+        negatives = [d for d in unique_docs if is_neg(d) and d not in positives]
+        neutrals = [d for d in unique_docs if d not in positives and d not in negatives]
+        # Within each bucket, sort by final_score desc
+        def score_key(d: Dict[str, Any]) -> float:
+            v = d.get("final_score")
+            return float(v) if isinstance(v, (int, float)) else -1e9
+        positives.sort(key=score_key, reverse=True)
+        neutrals.sort(key=score_key, reverse=True)
+        negatives.sort(key=score_key, reverse=True)
+        ordered = positives + neutrals + negatives
+        return {
+            "results": ordered[:k],
+            "total_candidates": len(results),
+            "reranking_applied": apply_reranking,
+            "vector_search_available": True,
+        }
+
+    def record_feedback(self, query: str, document_id: Any, sentiment: str, score: float) -> None:
+        val = 1.0 if str(sentiment).lower() in ("positive", "pos", "y", "yes") else (-1.0 if str(sentiment).lower() in ("negative", "neg", "n", "no") else 0.0)
+        # Fetch content best-effort for fingerprint
+        try:
+            data = get_client().table(self.table_name).select("id,content").eq("id", document_id).limit(1).execute().data
+            content = data[0]["content"] if data else None
+        except Exception:
+            content = None
+        self.feedback.set_feedback("demo-user", str(document_id), val if score is None else float(score), content=content)
+        # Update hard-ordering sets
+        try:
+            fp = _fingerprint(content or "")
+        except Exception:
+            fp = ""
+        if val > 0:
+            self.pos_ids.add(str(document_id))
+            if fp:
+                self.pos_fps.add(fp)
+            # Also remove from negative sets if present
+            self.neg_ids.discard(str(document_id))
+            if fp and fp in self.neg_fps:
+                self.neg_fps.discard(fp)
+        elif val < 0:
+            self.neg_ids.add(str(document_id))
+            if fp:
+                self.neg_fps.add(fp)
+            # Remove from positive sets if present
+            self.pos_ids.discard(str(document_id))
+            if fp and fp in self.pos_fps:
+                self.pos_fps.discard(fp)
+```
+
+
+============================
+FILE: src/rerank/feedback.py
+============================
+```python
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Dict, Tuple, Optional
+import re
+
+
+def _fingerprint(text: str) -> str:
+    t = text.lower()
+    t = re.sub(r"\s+", " ", t).strip()
+    return t[:200]
+
+
+@dataclass
+class FeedbackStore:
+    # key: (user_id, document_id) -> score
+    id_scores: Dict[Tuple[str, str], float] = field(default_factory=dict)
+    # key: (user_id, content_fp) -> score
+    content_scores: Dict[Tuple[str, str], float] = field(default_factory=dict)
+
+    def set_feedback(self, user_id: str, document_id: Optional[str], score: float, content: Optional[str] = None) -> None:
+        if document_id is not None:
+            self.id_scores[(user_id, document_id)] = float(score)
+        if content is not None and content.strip():
+            fp = _fingerprint(content)
+            self.content_scores[(user_id, fp)] = float(score)
+
+    def get_score(self, user_id: str, document_id: str, content: Optional[str]) -> float:
+        by_id = float(self.id_scores.get((user_id, document_id), 0.0))
+        by_fp = 0.0
+        if content is not None and content.strip():
+            fp = _fingerprint(content)
+            by_fp = float(self.content_scores.get((user_id, fp), 0.0))
+        # Prefer non-zero; if both non-zero, average
+        if by_id != 0.0 and by_fp != 0.0:
+            return (by_id + by_fp) / 2.0
+        return by_id if by_id != 0.0 else by_fp
+```
+
+
+============================
+FILE: src/rerank/rerank.py
+============================
+```python
+from __future__ import annotations
+from typing import List, Optional
+from dataclasses import dataclass
+from sentence_transformers import CrossEncoder
+from retrieval.search import SearchResult
+from rerank.feedback import FeedbackStore
+
+
+@dataclass
+class RerankedResult:
+    result: SearchResult
+    rerank_score: float
+    cross_encoder_score: float | None = None
+
+
+class CrossEncoderScorer:
+    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
+        self.model = CrossEncoder(model_name)
+
+    def score(self, query: str, texts: List[str]) -> List[float]:
+        pairs = [(query, t) for t in texts]
+        scores = self.model.predict(pairs, convert_to_numpy=True)
+        return scores.tolist()
+
+
+def _min_max_scale(values: List[float]) -> List[float]:
+    if not values:
+        return []
+    vmin = min(values)
+    vmax = max(values)
+    if vmax <= vmin:
+        return [0.5 for _ in values]
+    return [(v - vmin) / (vmax - vmin) for v in values]
+
+
+def rerank_with_feedback(
+    results: List[SearchResult],
+    user_id: Optional[str],
+    feedback: FeedbackStore,
+    query_text: Optional[str] = None,
+    cross_encoder: Optional[CrossEncoderScorer] = None,
+) -> List[RerankedResult]:
+    if not results:
+        return []
+
+    cross_scores: List[float] | None = None
+    if cross_encoder is not None and query_text is not None:
+        raw = cross_encoder.score(query_text, [r.content for r in results])
+        cross_scores = _min_max_scale(raw)
+
+    # If no user_id provided, apply only cross-encoder if present
+    if not user_id:
+        reranked = []
+        for idx, r in enumerate(results):
+            ce = cross_scores[idx] if cross_scores is not None else None
+            base = r.similarity  # already ~[0,1]
+            blended = base if ce is None else 0.5 * base + 0.5 * ce
+            reranked.append(RerankedResult(r, blended, cross_encoder_score=ce))
+        reranked.sort(key=lambda x: x.rerank_score, reverse=True)
+        return reranked
+
+    positives: List[RerankedResult] = []
+    neutrals: List[RerankedResult] = []
+    negatives: List[RerankedResult] = []
+
+    for idx, r in enumerate(results):
+        ce = cross_scores[idx] if cross_scores is not None else None
+        base = r.similarity
+        blended = base if ce is None else (0.5 * base + 0.5 * ce)
+        user_score = feedback.get_score(user_id, str(r.id), r.content)
+
+        if user_score > 0:
+            # Boost positives
+            score = 0.8 * blended + 0.2 * 1.0
+            positives.append(RerankedResult(r, score, cross_encoder_score=ce))
+        elif user_score < 0:
+            # Push negatives to the end regardless of blended score
+            score = blended
+            negatives.append(RerankedResult(r, score, cross_encoder_score=ce))
+        else:
+            neutrals.append(RerankedResult(r, blended, cross_encoder_score=ce))
+
+    positives.sort(key=lambda x: x.rerank_score, reverse=True)
+    neutrals.sort(key=lambda x: x.rerank_score, reverse=True)
+    negatives.sort(key=lambda x: x.rerank_score, reverse=True)
+
+    return positives + neutrals + negatives
+```
+
+
+============================
+FILE: src/retrieval/search.py
+============================
+```python
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import List, Any
+import numpy as np
+import torch
+from config import settings
+from vendors.supabase_client import get_client
+from retrieval.embedder import CodeBERTEmbedder
+import json
+
+
+def _l2_normalize(x: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(x, axis=1, keepdims=True) + 1e-12
+    return x / norms
+
+
+def _parse_vector(value: Any) -> List[float] | None:
+    # Accept already-parsed list
+    if isinstance(value, list):
+        try:
+            return [float(x) for x in value]
+        except Exception:
+            return None
+    # Accept JSON/string formats like "[0.1, 0.2]" or "{0.1,0.2}"
+    if isinstance(value, str):
+        s = value.strip()
+        try:
+            # Try JSON first
+            if s.startswith("[") and s.endswith("]"):
+                arr = json.loads(s)
+                if isinstance(arr, list):
+                    return [float(x) for x in arr]
+            # Try pg array style {..}
+            if s.startswith("{") and s.endswith("}"):
+                inner = s[1:-1]
+                parts = [p for p in inner.split(",") if p]
+                return [float(p) for p in parts]
+        except Exception:
+            return None
+    return None
+
+
+@dataclass
+class SearchResult:
+    id: Any
+    content: str
+    similarity: float
+
+
+class Retriever:
+    def __init__(self, top_k: int = 5):
+        self.top_k = top_k
+        self.embedder = CodeBERTEmbedder()
+        self.client = get_client()
+
+    def _fetch_documents(self) -> tuple[np.ndarray, list[dict]]:
+        rows: list[dict] = []
+        limit = 1000
+        offset = 0
+        while True:
+            resp = self.client.table(settings.table_name).select(
+                f"{settings.id_column},{settings.content_column},{settings.vector_column}"
+            ).range(offset, offset + limit - 1).execute()
+            batch = resp.data or []
+            rows.extend(batch)
+            if len(batch) < limit:
+                break
+            offset += limit
+        if not rows:
+            return np.zeros((0, 768), dtype=np.float32), []
+        vectors: list[list[float]] = []
+        metas: list[dict] = []
+        for r in rows:
+            vec_raw = r.get(settings.vector_column)
+            content = r.get(settings.content_column, "")
+            vec = _parse_vector(vec_raw)
+            if vec is None or len(vec) == 0:
+                continue
+            vectors.append(vec)
+            metas.append({
+                "id": r.get(settings.id_column),
+                "content": content,
+            })
+        if not vectors:
+            # No usable vectors parsed
+            return np.zeros((0, 768), dtype=np.float32), []
+        mat = np.asarray(vectors, dtype=np.float32)
+        mat = _l2_normalize(mat)
+        return mat, metas
+
+    def _embed_query(self, query: str) -> np.ndarray:
+        embeddings: torch.Tensor = self.embedder.embed([query])
+        arr = embeddings.numpy().astype(np.float32)
+        arr = _l2_normalize(arr)
+        return arr
+
+    def search(self, query: str) -> List[SearchResult]:
+        mat, meta = self._fetch_documents()
+        if mat.shape[0] == 0:
+            return []
+        q = self._embed_query(query)[0]
+        sims = (mat @ q)
+        top_idx = np.argsort(-sims)[: self.top_k]
+        results: List[SearchResult] = []
+        for i in top_idx:
+            m = meta[int(i)]
+            results.append(SearchResult(id=m["id"], content=m["content"], similarity=float(sims[int(i)])))
+        return results
+```
+
+
+============================
+FILE: src/retrieval/embedder.py
+============================
+```python
+from typing import List
+import torch
+from transformers import AutoTokenizer, AutoModel
+from config import settings
+
+class CodeBERTEmbedder:
+    def __init__(self, model_name: str | None = None, device: str | None = None, max_length: int | None = None, hf_token: str | None = None):
+        self.model_name = model_name or settings.model_name
+        requested_device = device or settings.device
+        if requested_device.startswith("cuda") and not torch.cuda.is_available():
+            self.device = "cpu"
+        else:
+            self.device = requested_device
+        self.max_length = max_length or settings.max_length
+        auth_token = hf_token or settings.hf_token or None
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, use_fast=True, token=auth_token)
+        self.model = AutoModel.from_pretrained(self.model_name, token=auth_token)
+        self.model.to(self.device)
+        self.model.eval()
+
+    @torch.no_grad()
+    def embed(self, texts: List[str]) -> torch.Tensor:
+        if len(texts) == 0:
+            return torch.empty(0, self.model.config.hidden_size)
+        batch = self.tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+        batch = {k: v.to(self.device) for k, v in batch.items()}
+        outputs = self.model(**batch)
+        token_embeddings = outputs.last_hidden_state
+        attention_mask = batch["attention_mask"].unsqueeze(-1)
+        masked = token_embeddings * attention_mask
+        summed = masked.sum(dim=1)
+        counts = attention_mask.sum(dim=1).clamp(min=1)
+        mean_pooled = summed / counts
+        return mean_pooled.detach().cpu()
+```
+
+
+============================
+FILE: src/vendors/supabase_client.py
+============================
+```python
+from supabase import create_client, Client
+from config import settings
+
+_supabase: Client | None = None
+
+
+def get_client() -> Client:
+    global _supabase
+    if _supabase is None:
+        if not settings.supabase_url or not settings.supabase_key:
+            raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set")
+        _supabase = create_client(settings.supabase_url, settings.supabase_key)
+    return _supabase
+```
+
+
+============================
+FILE: src/utils/chunk.py
+============================
+```python
+from typing import List
+from transformers import AutoTokenizer
+from config import settings
+
+class TokenChunker:
+    def __init__(self, model_name: str | None = None, max_tokens: int | None = None, overlap: int = 0):
+        self.model_name = model_name or settings.model_name
+        self.max_tokens = max_tokens or settings.max_length
+        self.overlap = overlap
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, use_fast=True)
+
+    def chunk(self, text: str) -> List[str]:
+        if not text:
+            return []
+        tokens = self.tokenizer.encode(text, add_special_tokens=False)
+        if len(tokens) <= self.max_tokens:
+            return [text]
+        chunks: List[str] = []
+        start = 0
+        while start < len(tokens):
+            end = min(start + self.max_tokens, len(tokens))
+            piece = tokens[start:end]
+            chunks.append(self.tokenizer.decode(piece, skip_special_tokens=True))
+            if end == len(tokens):
+                break
+            start = end - self.overlap if self.overlap > 0 else end
+        return chunks
+```
+
+
+============================
+FILE: data/docs/example.txt
+============================
+```text
+Instruction: Example local document for testing the retriever without DB.
+```
+
+
+============================
+FILE: src/__init__.py
+============================
+```python
+
+```
+
+============================
+FILE: src/application/__init__.py
+============================
+```python
+
+```
+
+============================
+FILE: src/rerank/__init__.py
+============================
+```python
+
+```
+
+============================
+FILE: src/utils/text.py
+============================
+```python
+
+```
+
+============================
+FILE: src/vendors/__init__.py
+============================
+```python
+
+```
+
+
+============================
+FILE: retrieval_rerank_codebert.egg-info/PKG-INFO
+============================
+```text
+Metadata-Version: 2.4
+Name: retrieval-rerank-codebert
+Version: 0.1.0
+Summary: Retrieval and reranking system using CodeBERT and Supabase pgvector
+Author: you
+Requires-Python: >=3.9
+Requires-Dist: torch>=2.1
+Requires-Dist: transformers>=4.41
+Requires-Dist: tokenizers>=0.15
+Requires-Dist: sentencepiece>=0.1.99
+Requires-Dist: tqdm>=4.66
+Requires-Dist: numpy>=1.26
+Requires-Dist: pandas>=2.2
+Requires-Dist: python-dotenv>=1.0
+Requires-Dist: supabase>=2.5
+Requires-Dist: pgvector>=0.2.5
+Requires-Dist: psycopg2-binary>=2.9
+Requires-Dist: sentence-transformers>=2.7
+```
+
+============================
+FILE: retrieval_rerank_codebert.egg-info/requires.txt
+============================
+```text
+torch>=2.1
+transformers>=4.41
+tokenizers>=0.15
+sentencepiece>=0.1.99
+tqdm>=4.66
+numpy>=1.26
+pandas>=2.2
+python-dotenv>=1.0
+supabase>=2.5
+pgvector>=0.2.5
+psycopg2-binary>=2.9
+sentence-transformers>=2.7
+```
+
+============================
+FILE: retrieval_rerank_codebert.egg-info/SOURCES.txt
+============================
+```text
+README.md
+pyproject.toml
+retrieval_rerank_codebert.egg-info/PKG-INFO
+retrieval_rerank_codebert.egg-info/SOURCES.txt
+retrieval_rerank_codebert.egg-info/dependency_links.txt
+retrieval_rerank_codebert.egg-info/requires.txt
+retrieval_rerank_codebert.egg-info/top_level.txt
+src/__init__.py
+src/cli.py
+src/config.py
+```
