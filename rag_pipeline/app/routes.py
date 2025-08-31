@@ -1,6 +1,9 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import PlainTextResponse, FileResponse
 from typing import List
 import time
+import os
+from pathlib import Path
 from .models import (
     SearchRequest, SearchResponse, GenerateRequest, GenerateResponse,
     SearchResultItem, FacetsResponse, StatsResponse, HealthResponse,
@@ -254,3 +257,58 @@ def api_generate_enhanced(payload: GenerationRequest):
     return GenerationResponse(**frontend_response)
 
 
+@router.get("/files/view")
+async def view_file(path: str = Query(..., description="File path to view")):
+    """
+    View a file by its path. Returns file content as plain text or serves the file directly.
+    """
+    try:
+        # Security: Only allow viewing files within the project directory
+        project_root = Path(__file__).parent.parent.parent
+        file_path = Path(path)
+
+        # If path is relative, make it relative to project root
+        if not file_path.is_absolute():
+            file_path = project_root / file_path
+
+        # Resolve to absolute path and check if it's within project
+        file_path = file_path.resolve()
+
+        # Security check: ensure file is within project directory
+        try:
+            file_path.relative_to(project_root.resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Access denied: File outside project directory")
+
+        # Check if file exists
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail=f"File not found: {path}")
+
+        if not file_path.is_file():
+            raise HTTPException(status_code=400, detail=f"Path is not a file: {path}")
+
+        # For text files, return content as plain text
+        text_extensions = {'.txt', '.md', '.py', '.js', '.ts', '.json', '.xml', '.html', '.css', '.yml', '.yaml', '.properties', '.groovy', '.java', '.xslt', '.wsdl'}
+
+        if file_path.suffix.lower() in text_extensions:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
+            except UnicodeDecodeError:
+                # If UTF-8 fails, try with different encoding
+                try:
+                    with open(file_path, 'r', encoding='latin-1') as f:
+                        content = f.read()
+                    return PlainTextResponse(content, media_type="text/plain; charset=latin-1")
+                except Exception:
+                    # If all text reading fails, serve as binary file
+                    return FileResponse(file_path)
+        else:
+            # For binary files, serve directly
+            return FileResponse(file_path)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")

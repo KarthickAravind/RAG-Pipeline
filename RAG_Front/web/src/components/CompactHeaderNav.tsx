@@ -1,18 +1,18 @@
 import { Link, useLocation } from 'react-router-dom'
-import { Search, BarChart3, Settings, Info, Zap, Code } from 'lucide-react'
+import { Search, BarChart3, Settings, Info, Zap, Code, Cpu } from 'lucide-react'
 import { useAppStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
 
 const navigation = [
-  { 
-    name: 'Search', 
-    href: '/search', 
+  {
+    name: 'Search',
+    href: '/search',
     icon: Search,
-    description: 'Run vector/hybrid search and inspect results'
+    description: 'Intelligent search with Knowledge Graph enhancement and code generation'
   },
-  { 
-    name: 'Generation Lab', 
-    href: '/generation', 
+  {
+    name: 'Generation Lab',
+    href: '/generation',
     icon: Code,
     description: 'Generate iFlow code using retrieved context'
   },

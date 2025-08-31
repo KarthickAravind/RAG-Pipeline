@@ -37,6 +37,24 @@ export interface SearchRequest {
   pagination?: PaginationConfig;
 }
 
+// Enhanced Agentic RAG Types
+export interface KnowledgeGraphResult {
+  name: string;
+  type: string;
+  description: string;
+  relationship_type: string;
+  distance: number;
+  properties?: Record<string, any>;
+}
+
+export interface WebSearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+  published_date?: string;
+  relevance_score: number;
+}
+
 export interface SearchResult {
   id: string;
   title?: string;
@@ -51,6 +69,7 @@ export interface SearchResult {
     created_at?: string;
     size_bytes?: number;
     source?: string;
+    chunk_id?: string;
   };
   scores: {
     vector?: number;
@@ -58,6 +77,18 @@ export interface SearchResult {
     metadata_boost?: number;
     hybrid?: number;
     final: number;
+  };
+  // Enhanced Agentic RAG fields
+  related_components?: KnowledgeGraphResult[];
+  dependencies?: KnowledgeGraphResult[];
+  integration_patterns?: KnowledgeGraphResult[];
+  web_updates?: WebSearchResult[];
+  latest_info?: string;
+  final_relevance_score?: number;
+  source_breakdown?: {
+    vector: number;
+    kg: number;
+    web: number;
   };
 }
 
@@ -67,6 +98,13 @@ export interface SearchResponse {
   page: number;
   page_size: number;
   elapsed_ms: number;
+  // Enhanced for agentic search
+  agentic_info?: {
+    kg_enhancements_count: number;
+    web_enhancements_count: number;
+    total_sources_used: number;
+    enhancement_time_ms: number;
+  };
 }
 
 export interface FacetsResponse {
@@ -177,7 +215,41 @@ export interface ExperimentPreset {
   last_used?: string;
 }
 
-// Generation Types
+// Enhanced Generation Types
+export interface CodeGenerationRequest {
+  search_result: SearchResult;
+  template_type: CodeTemplateType;
+  include_validation?: boolean;
+  include_error_handling?: boolean;
+  custom_parameters?: Record<string, any>;
+}
+
+export interface CodeGenerationResponse {
+  generated_code: string;
+  template_used: CodeTemplateType;
+  sources_used: {
+    vector_content: boolean;
+    business_steps: number;
+    file_references: number;
+  };
+  code_sections: {
+    imports: string;
+    configuration: string;
+    validation: string;
+    main_logic: string;
+    error_handling: string;
+  };
+  elapsed_ms: number;
+}
+
+export type CodeTemplateType =
+  | "groovy_script"
+  | "xslt_mapping"
+  | "xml_configuration"
+  | "properties_file"
+  | "complete_iflow";
+
+// Legacy generation types (for backward compatibility)
 export interface GenerationRequest {
   prompt: string;
   context: SearchResult[];

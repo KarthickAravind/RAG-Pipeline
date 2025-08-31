@@ -44,22 +44,7 @@ export function SideFilters({ filters, onFiltersChange }: SideFiltersProps) {
           </div>
         )}
 
-        {/* Min Score */}
-        <div>
-          <label className="block text-sm font-medium mb-2">Min Final Score</label>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.1"
-            value={filters.min_score || 0}
-            onChange={(e) => updateFilter('min_score', parseFloat(e.target.value))}
-            className="slider-compact w-full"
-          />
-          <div className="text-xs text-muted-foreground text-center mt-1">
-            {(filters.min_score || 0).toFixed(1)}
-          </div>
-        </div>
+        {/* Additional filters can be added here */}
       </div>
     </div>
   )
