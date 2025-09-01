@@ -162,3 +162,8 @@ dev_config.json
 # Test files that might contain sensitive data
 test_credentials.py
 test_keys.py
+
+# Large export files and documentation dumps
+FULL_EXPORT.txt
+**/FULL_EXPORT.txt
+*.export.txt
