@@ -275,10 +275,11 @@ async def view_file(path: str = Query(..., description="File path to view")):
         file_path = file_path.resolve()
 
         # Security check: ensure file is within project directory
-        try:
-            file_path.relative_to(project_root.resolve())
-        except ValueError:
-            raise HTTPException(status_code=403, detail="Access denied: File outside project directory")
+        # COMMENTED OUT: Allow access to files outside project directory for KG integration
+        # try:
+        #     file_path.relative_to(project_root.resolve())
+        # except ValueError:
+        #     raise HTTPException(status_code=403, detail="Access denied: File outside project directory")
 
         # Check if file exists
         if not file_path.exists():
