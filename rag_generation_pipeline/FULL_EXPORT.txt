@@ -1,0 +1,589 @@
+============================
+Directory Tree: Program/rag_generation_pipeline
+============================
+
+- app/
+  - __init__.py
+  - config.py
+  - llm_router.py
+  - main.py
+  - models.py
+  - prompts.py
+  - retriever_client.py
+  - routes.py
+  - service.py
+  - utils.py
+  - validation.py
+- README.md
+- requirements.txt
+- run.sh
+- tests/
+  - test_endpoints.py
+  - test_prompts.py
+  - test_validation.py
+
+
+============================
+How It Works (Overview)
+============================
+
+- This is Person 3's FastAPI service for SAP iFlow artifact generation.
+- It calls a retriever (Person 2) to obtain top-k relevant chunks, builds a context, selects an LLM (HuggingFace Inference endpoint via LangChain), and generates code (Groovy, XML, properties, or XSLT) using prompt templates.
+- It then validates outputs (XML/properties) and returns structured artifacts and the context IDs used.
+
+Flow:
+1) POST /generate -> service.generate_iflow_artifact
+2) detect_query_type -> choose_model + prompt template
+3) call_retriever -> build_context
+4) LLM inference via HuggingFaceEndpoint/ChatHuggingFace
+5) extract_artifacts + validate -> response
+
+
+============================
+FILE: README.md
+============================
+```markdown
+## Person 3 — SAP iFlow RAG Generation (Free HF)
+
+FastAPI service that retrieves context and generates SAP iFlow artifacts using Hugging Face Inference endpoints via LangChain.
+
+### Setup
+- Create and populate an `.env` file (values below):
+```
+HUGGINGFACEHUB_API_TOKEN=your_hf_token_here
+RETRIEVER_BASE_URL=http://localhost:8000
+GEN_TOP_K=5
+MAX_CONTEXT_CHARS=12000
+```
+- Install dependencies:
+```
+pip install -r requirements.txt
+```
+
+### Run
+```
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### Endpoints
+- GET `/health` → `{ "ok": true }`
+- POST `/generate` → body `{ query: string, top_k?: number, model_id?: string }`
+  - Response: `{ query, model_used, validation_status, output_type, generated_output, context_used }`
+```
+
+
+============================
+FILE: app/config.py
+============================
+```python
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+HF_TOKEN = os.getenv("HUGGINGFACEHUB_API_TOKEN", "")
+RETRIEVER_BASE_URL = os.getenv("RETRIEVER_BASE_URL", "http://localhost:8000")
+
+if not HF_TOKEN:
+    raise RuntimeError("HUGGINGFACEHUB_API_TOKEN is not set")
+
+DEFAULT_TOP_K = int(os.getenv("GEN_TOP_K", "5"))
+MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "12000"))
+
+SUPPORTED_MODELS = {
+    "mistral": "mistralai/Mistral-7B-Instruct-v0.3",
+    "codellama": "codellama/CodeLlama-7b-Instruct-hf",
+    "zephyr": "HuggingFaceH4/zephyr-7b-beta",
+    "gemma": "google/gemma-7b-it",
+}
+```
+
+
+============================
+FILE: app/llm_router.py
+============================
+```python
+from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
+from .config import HF_TOKEN, SUPPORTED_MODELS
+
+
+# Models that only support conversational API
+CHAT_ONLY_MODELS = {
+    "mistral",
+    "mistralai/Mistral-7B-Instruct-v0.3",
+    "HuggingFaceH4/zephyr-7b-beta",
+    "google/gemma-7b-it",
+}
+
+
+def make_hf_llm(model_id: str):
+    """
+    Auto-selects between ChatHuggingFace and HuggingFaceEndpoint
+    depending on model capabilities.
+    """
+    if any(key in model_id for key in CHAT_ONLY_MODELS):
+        llm = HuggingFaceEndpoint(
+            repo_id=model_id,
+            task="conversational",
+            max_new_tokens=1024,
+            temperature=0.2,
+            huggingfacehub_api_token=HF_TOKEN,
+        )
+        return ChatHuggingFace(llm=llm)
+
+    return HuggingFaceEndpoint(
+        repo_id=model_id,
+        task="text-generation",
+        max_new_tokens=1024,
+        temperature=0.2,
+        huggingfacehub_api_token=HF_TOKEN,
+    )
+
+
+def choose_model(qtype: str, override: str = None):
+    if override:
+        return SUPPORTED_MODELS.get(override, override)
+
+    if qtype == "groovy":
+        return SUPPORTED_MODELS["mistral"]     # or SUPPORTED_MODELS["zephyr"]
+    if qtype == "xml":
+        return SUPPORTED_MODELS["mistral"]
+    if qtype == "properties":
+        return SUPPORTED_MODELS["zephyr"]      # use zephyr for props
+    if qtype == "xslt":
+        return SUPPORTED_MODELS["gemma"]       # use gemma for xslt
+
+    return SUPPORTED_MODELS["mistral"]         # safe fallback
+```
+
+
+============================
+FILE: app/main.py
+============================
+```python
+from fastapi import FastAPI
+from .routes import router
+
+app = FastAPI(title="SAP iFlow RAG Generation (Free HF)")
+app.include_router(router)
+
+@app.get("/health")
+def health():
+    return {"ok": True}
+```
+
+
+============================
+FILE: app/models.py
+============================
+```python
+from typing import List, Optional, Literal
+from pydantic import BaseModel
+from typing import Dict
+
+class RetrievedChunk(BaseModel):
+    id: Optional[str] = None
+    content: str
+    component_type: Optional[str] = None
+    dataset: Optional[str] = None
+    vector_score: Optional[float] = None
+    cross_encoder_score: Optional[float] = None
+    metadata_boost: Optional[float] = None
+    final_score: Optional[float] = None
+
+
+class GenerateRequest(BaseModel):
+    query: str
+    top_k: int = 5
+    model_id: Optional[str] = None
+
+
+class GenerateResponse(BaseModel):
+    query: str
+    model_used: str
+    validation_status: str
+    artifacts: Dict[str, str]
+    context_used: List[str]
+```
+
+
+============================
+FILE: app/prompts.py
+============================
+```python
+from langchain.prompts import ChatPromptTemplate
+
+ALLOWED_TYPES = "groovy, xml, properties, xslt"
+
+PROMPTS = {
+    "groovy": ChatPromptTemplate.from_messages([
+        ("system", f"""You are a Groovy code generator for SAP iFlow. 
+            Rules:
+            - Always wrap code inside [type=groovy]...[/type].
+            - Never invent new labels. Allowed types are: {ALLOWED_TYPES}.
+            - Do not add explanations or text outside the tags.
+            """),
+        ("human", "Task: {query}\nContext:\n{context}")
+    ]),
+
+    "xml": ChatPromptTemplate.from_messages([
+        ("system", f"""You are an SAP iFlow XML generator. 
+        Rules:
+        - Always wrap valid XML inside [type=xml]...[/type].
+        - Never invent new labels. Allowed types are: {ALLOWED_TYPES}.
+        """),
+        ("human", "Task: {query}\nContext:\n{context}")
+    ]),
+
+    "properties": ChatPromptTemplate.from_messages([
+        ("system", f"""You are a .properties generator.
+        Rules:
+        - Always wrap inside [type=properties]...[/type].
+        - Never invent new labels. Allowed types are: {ALLOWED_TYPES}.
+        """),
+        ("human", "Task: {query}\nContext:\n{context}")
+    ]),
+
+    "xslt": ChatPromptTemplate.from_messages([
+    ("system", "Output must be VALID XSLT (XML). Wrap it in [type=xslt]...[/type=xslt] markers."),
+    ("human", "Task: {query}\nContext:\n{context}\nReturn XSLT only, inside [type=xslt]...")
+]),
+
+    "unknown": ChatPromptTemplate.from_messages([
+        ("system", f"""Infer the correct artifact type. 
+            Rules:
+            - Use only [type=groovy], [type=xml], [type=properties], or [type=xslt].
+            - Never invent labels like [Integration] or [Java].
+            - Wrap each artifact strictly inside its [type=...] block.
+            """),
+        ("human", "Task: {query}\nContext:\n{context}")
+    ]),
+}
+```
+
+
+============================
+FILE: app/retriever_client.py
+============================
+```python
+import requests
+from fastapi import HTTPException
+from .models import RetrievedChunk
+from .config import RETRIEVER_BASE_URL
+
+
+def call_retriever(query: str, top_k: int):
+    url = f"{RETRIEVER_BASE_URL.rstrip('/')}/search"
+    try:
+        r = requests.post(url, json={"query": query, "top_k": top_k}, timeout=30)
+        r.raise_for_status()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Retriever error: {e}")
+    data = r.json()
+    return [RetrievedChunk(**it) for it in data.get("results", [])]
+```
+
+
+============================
+FILE: app/routes.py
+============================
+```python
+from fastapi import APIRouter
+from .models import GenerateRequest, GenerateResponse
+from .service import generate_iflow_artifact
+
+
+router = APIRouter()
+
+
+@router.post("/generate", response_model=GenerateResponse)
+def api_generate(req: GenerateRequest):
+    return generate_iflow_artifact(req.query, req.top_k, req.model_id)
+```
+
+
+============================
+FILE: app/service.py
+============================
+```python
+from fastapi import HTTPException
+from types import SimpleNamespace
+from .models import GenerateResponse
+from .utils import detect_query_type, build_context, extract_artifacts   # ✅ updated
+from .prompts import PROMPTS
+from .llm_router import make_hf_llm, choose_model
+from .retriever_client import call_retriever
+from .validation import validate_xml, validate_properties
+
+
+def generate_iflow_artifact(query: str, top_k: int, model_id: str = None) -> GenerateResponse:
+    qtype = detect_query_type(query)
+
+    # 🔄 Try retriever, fallback to dummy chunks if unavailable
+    try:
+        chunks = call_retriever(query, top_k)
+    except Exception as e:
+        print(f"[WARN] Retriever unavailable: {e}. Using dummy chunks instead.")
+        chunks = [
+            SimpleNamespace(id="dummy-1", content="<IntegrationFlow>Dummy SAP iFlow XML</IntegrationFlow>", component_type="xml"),
+            SimpleNamespace(id="dummy-2", content="Groovy script example: println('Dummy logging script')", component_type="groovy"),
+            SimpleNamespace(id="dummy-3", content="properties.example=true", component_type="properties"),
+        ]
+
+    if not chunks:
+        raise HTTPException(status_code=404, detail="No context available (retriever + dummy failed)")
+
+    context_text, used_ids = build_context(chunks)
+
+    # Select correct prompt + model
+    tmpl = PROMPTS[qtype]
+    chosen_model = choose_model(qtype, override=model_id)
+    llm = make_hf_llm(chosen_model)
+    chain = tmpl | llm
+
+    # Run model
+    raw = chain.invoke({"query": query, "context": context_text})
+
+    # ✅ Handle ChatMessage/AIMessage case
+    if hasattr(raw, "content"):
+        text = raw.content
+    else:
+        text = str(raw)
+
+    # ✅ Extract structured artifacts
+    artifacts = extract_artifacts(text)
+
+    # Validation (per artifact type if available)
+    vstatus = "unchecked"
+    if "xml" in artifacts:
+        vstatus = "valid" if validate_xml(artifacts["xml"]) else "invalid"
+    elif "properties" in artifacts:
+        vstatus = "valid" if validate_properties(artifacts["properties"]) else "invalid"
+
+    return GenerateResponse(
+        query=query,
+        model_used=chosen_model,
+        validation_status=vstatus,
+        artifacts=artifacts,      # ✅ now structured dict instead of single string
+        context_used=used_ids,
+    )
+```
+
+
+============================
+FILE: app/utils.py
+============================
+```python
+import re
+from typing import List, Tuple
+from .models import RetrievedChunk
+
+MAX_CONTEXT_CHARS = 12000
+
+
+def build_context(chunks: List[RetrievedChunk], max_chars: int = MAX_CONTEXT_CHARS) -> Tuple[str, List[str]]:
+    parts, used_ids, total = [], [], 0
+    for ch in chunks:
+        block = f"[type={ch.component_type or 'unknown'}]\n{ch.content}\n"
+        if total + len(block) > max_chars:
+            break
+        parts.append(block)
+        used_ids.append(ch.id or "-")
+        total += len(block)
+    return "".join(parts), used_ids
+
+
+def extract_artifacts(text: str) -> dict:
+    """
+    Extract artifacts from [type=...]... blocks.
+    Normalize weird/mistyped tags into known categories.
+    Support multiple artifacts under the same type.
+    """
+    artifacts = {}
+    pattern = r"\[type=(\w+)\](.*?)(?=\[type=|\Z)"
+    matches = re.findall(pattern, text, re.DOTALL)
+
+    normalize_map = {
+        "integration": "xml",
+        "integrationflow": "xml",
+        "java": "groovy",         # treat Java-like output as Groovy-ish
+        "groovyscript": "groovy",
+        "property-file": "properties",
+        "prop": "properties",
+    }
+
+    for lang, content in matches:
+        lang = lang.strip().lower()
+        lang = normalize_map.get(lang, lang)  # normalize invalid types
+
+        if lang not in artifacts:
+            artifacts[lang] = []
+        artifacts[lang].append(content.strip())
+
+    # flatten single-item lists
+    for k, v in list(artifacts.items()):
+        if isinstance(v, list) and len(v) == 1:
+            artifacts[k] = v[0]
+
+    # fallback: if no markers, return raw text under 'default'
+    if not artifacts:
+        artifacts["default"] = text.strip()
+
+    return artifacts
+
+
+def detect_query_type(q: str):
+    ql = q.lower()
+    if "groovy" in ql:
+        return "groovy"
+    if "xml" in ql and "xslt" not in ql:
+        return "xml"
+    if "xslt" in ql:
+        return "xslt"
+    if "properties" in ql:
+        return "properties"
+    return "unknown"
+```
+
+
+============================
+FILE: app/validation.py
+============================
+```python
+from lxml import etree
+
+
+def validate_xml(text: str) -> bool:
+    try:
+        etree.fromstring(text.encode("utf-8"))
+        return True
+    except Exception:
+        return False
+
+
+def validate_properties(text: str) -> bool:
+    for ln in text.splitlines():
+        if not ln.strip() or ln.strip().startswith('#'):
+            continue
+        if '=' not in ln:
+            return False
+    return True
+```
+
+
+============================
+FILE: app/__init__.py
+============================
+```python
+__version__ = "0.1.0"
+```
+
+
+============================
+FILE: requirements.txt
+============================
+```text
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.8.0
+python-dotenv>=1.0.1
+requests>=2.32.0
+lxml>=5.2.0
+pytest>=8.0.0
+langchain>=0.2.11
+langchain-core>=0.2.26
+langchain-community>=0.2.10
+langchain-huggingface>=0.0.3
+huggingface_hub>=0.24.5
+```
+
+
+============================
+FILE: run.sh
+============================
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+HOST="${HOST:-0.0.0.0}"
+PORT="${PORT:-8000}"
+
+uvicorn app.main:app --host "$HOST" --port "$PORT" --reload
+```
+
+
+============================
+FILE: tests/test_endpoints.py
+============================
+```python
+from fastapi.testclient import TestClient
+
+from app.main import app
+
+
+client = TestClient(app)
+
+
+def test_health():
+    res = client.get("/health")
+    assert res.status_code == 200
+    assert res.json()["status"] == "ok"
+
+
+def test_generate_minimal():
+    payload = {"query": "Create a simple example"}
+    res = client.post("/generate", json=payload)
+    assert res.status_code == 200
+    body = res.json()
+    assert "content" in body
+    assert "model" in body
+```
+
+
+============================
+FILE: tests/test_prompts.py
+============================
+```python
+from app.prompts import build_prompt
+
+
+def test_build_prompt_contains_parts():
+    prompt = build_prompt("Do X", "Context text", output_format="xml", language="groovy")
+    assert "SAP iFlow" in prompt
+    assert "Context:" in prompt
+    assert "User Query:" in prompt
+    assert "xml" in prompt
+    assert "groovy" in prompt
+```
+
+
+============================
+FILE: tests/test_validation.py
+============================
+```python
+from app.validation import validate_properties, validate_xml
+
+
+def test_validate_xml_ok():
+    ok, err = validate_xml("<root><a/></root>")
+    assert ok
+    assert err == ""
+
+
+def test_validate_xml_bad():
+    ok, err = validate_xml("<root><a></root>")
+    assert not ok
+    assert isinstance(err, str) and err
+
+
+def test_validate_properties_ok():
+    text = "a=1\n# comment\nkey.with.dot=value"
+    ok, err = validate_properties(text)
+    assert ok
+    assert err == ""
+
+
+def test_validate_properties_bad():
+    ok, err = validate_properties("badline")
+    assert not ok
+    assert "=" in err
+```
